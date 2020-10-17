@@ -3,18 +3,18 @@ import logging
 import os
 import sys
 
-import numpy as np
 import torch
 import torch.nn as nn
 from torch import optim
+from torch.utils.data import DataLoader, random_split
+from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
 from eval import eval_net
 from unet import UNet
-
-from torch.utils.tensorboard import SummaryWriter
 from utils.dataset import BasicDataset
-from torch.utils.data import DataLoader, random_split
+
+os.environ['CUDA_VISIBLE_DEVICES'] = "1, 2"
 
 dir_img = 'data/imgs/'
 dir_mask = 'data/masks/'
@@ -29,7 +29,6 @@ def train_net(net,
               val_percent=0.1,
               save_cp=True,
               img_scale=0.5):
-
     dataset = BasicDataset(dir_img, dir_mask, img_scale)
     n_val = int(len(dataset) * val_percent)
     n_train = len(dataset) - n_val
@@ -37,19 +36,21 @@ def train_net(net,
     train_loader = DataLoader(train, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
     val_loader = DataLoader(val, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True, drop_last=True)
 
-    writer = SummaryWriter(comment=f'LR_{lr}_BS_{batch_size}_SCALE_{img_scale}')
+    writer = SummaryWriter(
+        comment='LR_{lr}_BS_{batch_size}_SCALE_{img_scale}'.format(lr=lr, batch_size=batch_size, img_scale=img_scale))
     global_step = 0
 
-    logging.info(f'''Starting training:
+    logging.info('''Starting training:
         Epochs:          {epochs}
         Batch size:      {batch_size}
         Learning rate:   {lr}
         Training size:   {n_train}
         Validation size: {n_val}
         Checkpoints:     {save_cp}
-        Device:          {device.type}
+        Device:          {device}
         Images scaling:  {img_scale}
-    ''')
+    '''.format(epochs=epochs, batch_size=batch_size, lr=lr, n_train=n_train, n_val=n_val, save_cp=save_cp,
+               device=device.type, img_scale=img_scale))
 
     optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8, momentum=0.9)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min' if net.n_classes > 1 else 'max', patience=2)
@@ -62,18 +63,21 @@ def train_net(net,
         net.train()
 
         epoch_loss = 0
-        with tqdm(total=n_train, desc=f'Epoch {epoch + 1}/{epochs}', unit='img') as pbar:
+        with tqdm(total=n_train, desc='Epoch {epoch}/{epochs}'.format(epoch=epoch + 1, epochs=epochs),
+                  unit='img') as pbar:
             for batch in train_loader:
                 imgs = batch['image']
                 true_masks = batch['mask']
                 assert imgs.shape[1] == net.n_channels, \
-                    f'Network has been defined with {net.n_channels} input channels, ' \
-                    f'but loaded images have {imgs.shape[1]} channels. Please check that ' \
-                    'the images are loaded correctly.'
+                    'Network has been defined with {n_channels} input channels, ' \
+                    'but loaded images have {shape} channels. Please check that ' \
+                    'the images are loaded correctly.'.format(n_channels=net.n_channels, shape=imgs.shape[1])
 
-                imgs = imgs.to(device=device, dtype=torch.float32)
-                mask_type = torch.float32 if net.n_classes == 1 else torch.long
-                true_masks = true_masks.to(device=device, dtype=mask_type)
+                # imgs = imgs.to(device=device, dtype=torch.float32)
+                imgs = imgs.cuda()
+                # mask_type = torch.float32 if net.n_classes == 1 else torch.long
+                # true_masks = true_masks.to(device=device, dtype=mask_type)
+                true_masks = true_masks.cuda()
 
                 masks_pred = net(imgs)
                 loss = criterion(masks_pred, true_masks)
@@ -117,8 +121,8 @@ def train_net(net,
             except OSError:
                 pass
             torch.save(net.state_dict(),
-                       dir_checkpoint + f'CP_epoch{epoch + 1}.pth')
-            logging.info(f'Checkpoint {epoch + 1} saved !')
+                       dir_checkpoint + 'CP_epoch{epoch}.pth'.format(epoch=epoch + 1))
+            logging.info('Checkpoint {epoch} saved !'.format(epoch=epoch + 1))
 
     writer.close()
 
@@ -146,7 +150,7 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     args = get_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logging.info(f'Using device {device}')
+    logging.info('Using device {device}'.format(device=device))
 
     # Change here to adapt to your data
     # n_channels=3 for RGB images
@@ -155,18 +159,21 @@ if __name__ == '__main__':
     #   - For 2 classes, use n_classes=1
     #   - For N > 2 classes, use n_classes=N
     net = UNet(n_channels=3, n_classes=1, bilinear=True)
-    logging.info(f'Network:\n'
-                 f'\t{net.n_channels} input channels\n'
-                 f'\t{net.n_classes} output channels (classes)\n'
-                 f'\t{"Bilinear" if net.bilinear else "Transposed conv"} upscaling')
+    logging.info('Network:\n'
+                 '\t{n_channels} input channels\n'
+                 '\t{n_classes} output channels (classes)\n'
+                 '\t{type} upscaling'.format(n_channels=net.n_channels, n_classes=net.n_classes,
+                                             type="Bilinear" if net.bilinear else "Transposed conv"))
 
     if args.load:
         net.load_state_dict(
             torch.load(args.load, map_location=device)
         )
-        logging.info(f'Model loaded from {args.load}')
+        logging.info('Model loaded from {load}'.format(load=args.load))
 
-    net.to(device=device)
+    model = nn.DataParallel(net, device_ids=[1, 2])
+    model.cuda()
+    # net.to(device=device)
     # faster convolutions, but more memory
     # cudnn.benchmark = True
 

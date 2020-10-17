@@ -1,11 +1,14 @@
-from os.path import splitext
-from os import listdir
-import numpy as np
-from glob import glob
-import torch
-from torch.utils.data import Dataset
 import logging
+from glob import glob
+from os import listdir
+from os.path import splitext
+
+import numpy as np
+import torch
 from PIL import Image
+from torch.utils.data import Dataset
+
+Image.MAX_IMAGE_PIXELS = 1000000000
 
 
 class BasicDataset(Dataset):
@@ -18,7 +21,7 @@ class BasicDataset(Dataset):
 
         self.ids = [splitext(file)[0] for file in listdir(imgs_dir)
                     if not file.startswith('.')]
-        logging.info(f'Creating dataset with {len(self.ids)} examples')
+        logging.info('Creating dataset with {length} examples'.format(length=len(self.ids)))
 
     def __len__(self):
         return len(self.ids)
@@ -48,14 +51,16 @@ class BasicDataset(Dataset):
         img_file = glob(self.imgs_dir + idx + '.jpg')
 
         assert len(mask_file) == 1, \
-            f'Either no mask or multiple masks found for the ID {idx}: {mask_file}'
+            'Either no mask or multiple masks found for the ID {idx}: {mask_file}'.format(idx=idx, mask_file=mask_file)
         assert len(img_file) == 1, \
-            f'Either no image or multiple images found for the ID {idx}: {img_file}'
-        mask = Image.open(mask_file[0])
-        img = Image.open(img_file[0])
+            'Either no image or multiple images found for the ID {idx}: {img_file}'.format(idx=idx, img_file=img_file)
+        mask = Image.open(mask_file[0]).resize((5000, 5000), Image.ANTIALIAS)
+        img = Image.open(img_file[0]).resize((5000, 5000), Image.ANTIALIAS)
 
         assert img.size == mask.size, \
-            f'Image and mask {idx} should be the same size, but are {img.size} and {mask.size}'
+            'Image and mask {idx} should be the same size, but are {img_size} and {mask_size}'.format(idx=idx,
+                                                                                                      img_size=img.size,
+                                                                                                      mask_size=mask.size)
 
         img = self.preprocess(img, self.scale)
         mask = self.preprocess(mask, self.scale)
