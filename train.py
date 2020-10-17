@@ -14,7 +14,7 @@ from eval import eval_net
 from unet import UNet
 from utils.dataset import BasicDataset
 
-os.environ['CUDA_VISIBLE_DEVICES'] = "1, 2"
+os.environ['CUDA_VISIBLE_DEVICES'] = "0, 1"
 
 dir_img = 'data/imgs/'
 dir_mask = 'data/masks/'
@@ -22,6 +22,7 @@ dir_checkpoint = 'checkpoints/'
 
 
 def train_net(net,
+              model,
               device,
               epochs=5,
               batch_size=1,
@@ -52,7 +53,7 @@ def train_net(net,
     '''.format(epochs=epochs, batch_size=batch_size, lr=lr, n_train=n_train, n_val=n_val, save_cp=save_cp,
                device=device.type, img_scale=img_scale))
 
-    optimizer = optim.RMSprop(net.parameters(), lr=lr, weight_decay=1e-8, momentum=0.9)
+    optimizer = optim.RMSprop(model.parameters(), lr=lr, weight_decay=1e-8, momentum=0.9)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min' if net.n_classes > 1 else 'max', patience=2)
     if net.n_classes > 1:
         criterion = nn.CrossEntropyLoss()
@@ -60,7 +61,7 @@ def train_net(net,
         criterion = nn.BCEWithLogitsLoss()
 
     for epoch in range(epochs):
-        net.train()
+        model.train()
 
         epoch_loss = 0
         with tqdm(total=n_train, desc='Epoch {epoch}/{epochs}'.format(epoch=epoch + 1, epochs=epochs),
@@ -79,7 +80,7 @@ def train_net(net,
                 # true_masks = true_masks.to(device=device, dtype=mask_type)
                 true_masks = true_masks.cuda()
 
-                masks_pred = net(imgs)
+                masks_pred = model(imgs)
                 loss = criterion(masks_pred, true_masks)
                 epoch_loss += loss.item()
                 writer.add_scalar('Loss/train', loss.item(), global_step)
@@ -88,17 +89,17 @@ def train_net(net,
 
                 optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_value_(net.parameters(), 0.1)
+                nn.utils.clip_grad_value_(model.parameters(), 0.1)
                 optimizer.step()
 
                 pbar.update(imgs.shape[0])
                 global_step += 1
                 if global_step % (n_train // (10 * batch_size)) == 0:
-                    for tag, value in net.named_parameters():
+                    for tag, value in model.named_parameters():
                         tag = tag.replace('.', '/')
                         writer.add_histogram('weights/' + tag, value.data.cpu().numpy(), global_step)
                         writer.add_histogram('grads/' + tag, value.grad.data.cpu().numpy(), global_step)
-                    val_score = eval_net(net, val_loader, device)
+                    val_score = eval_net(net, model, val_loader)
                     scheduler.step(val_score)
                     writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], global_step)
 
@@ -120,7 +121,7 @@ def train_net(net,
                 logging.info('Created checkpoint directory')
             except OSError:
                 pass
-            torch.save(net.state_dict(),
+            torch.save(model.state_dict(),
                        dir_checkpoint + 'CP_epoch{epoch}.pth'.format(epoch=epoch + 1))
             logging.info('Checkpoint {epoch} saved !'.format(epoch=epoch + 1))
 
@@ -171,14 +172,15 @@ if __name__ == '__main__':
         )
         logging.info('Model loaded from {load}'.format(load=args.load))
 
-    model = nn.DataParallel(net, device_ids=[1, 2])
-    model.cuda()
+    model = nn.DataParallel(net, device_ids=[0, 1])
+    model = model.cuda()
     # net.to(device=device)
     # faster convolutions, but more memory
     # cudnn.benchmark = True
 
     try:
         train_net(net=net,
+                  model=model,
                   epochs=args.epochs,
                   batch_size=args.batchsize,
                   lr=args.lr,
@@ -186,7 +188,7 @@ if __name__ == '__main__':
                   img_scale=args.scale,
                   val_percent=args.val / 100)
     except KeyboardInterrupt:
-        torch.save(net.state_dict(), 'INTERRUPTED.pth')
+        torch.save(model.state_dict(), 'INTERRUPTED.pth')
         logging.info('Saved interrupt')
         try:
             sys.exit(0)
